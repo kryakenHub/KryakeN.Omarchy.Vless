@@ -610,7 +610,7 @@ serve() {
     echo '{"code":1,"out":"","err":"serve: installed backend missing or is a symlink"}' 
     return 1
   fi
-  owner=$(ls -ld -- "$INSTALLED_BACKEND" 2>/dev/null | awk '{print $3}')
+  owner=$(ls -ldn -- "$INSTALLED_BACKEND" 2>/dev/null | awk '{print $3}')
   mode=$(ls -ld -- "$INSTALLED_BACKEND" 2>/dev/null | awk '{print $1}')
   # Numeric UID must be 0 (root).
   if [ "$owner" != "0" ]; then
