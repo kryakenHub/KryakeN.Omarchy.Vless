@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "kryaken.omarchy.vless",
+  "name": "VLESS VPN",
+  "version": "0.2.0",
+  "author": "poseydon",
+  "license": "MIT",
+  "description": "An Omarchy bar widget for an Xray VLESS tunnel: local SOCKS/HTTP proxy or system-wide transparent mode, autostart, connection test and logs (Omarchy + Quickshell).",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "VLESS VPN",
+    "description": "Toggle the Xray VLESS tunnel and switch between local-proxy and system-wide modes from the Omarchy bar.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}
