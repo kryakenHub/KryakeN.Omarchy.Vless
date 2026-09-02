@@ -140,6 +140,10 @@ Panel {
   readonly property string daemonScriptPath:
     Qt.resolvedUrl("backend.sh").toString().replace(/^file:\/\//, "")
 
+  // Root-owned copy installed by ensure_install(); used for all pkexec
+  // invocations so we never re-execute a user-writable script as root.
+  readonly property string privilegedScriptPath: "/etc/xray-vpn/backend.sh"
+
   // Copy-pasteable commands for onboarding (shown while a dependency is
   // missing): install a package, or re-validate the whole setup in a terminal.
   readonly property string doctorCommand:
@@ -170,7 +174,7 @@ Panel {
 
   function _serveEnsure() {
     if (serveProcess.running) return
-    serveProcess.command = ["pkexec", root.daemonScriptPath, "serve"]
+    serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
     serveProcess.running = true
   }
 

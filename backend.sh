@@ -24,6 +24,7 @@ MODE_FILE="$CONFDIR/mode"
 PROFILES_DIR="$CONFDIR/profiles"
 ACTIVE_FILE="$CONFDIR/active"
 UNIT="/etc/systemd/system/xray-vpn.service"
+INSTALLED_BACKEND="$CONFDIR/backend.sh"
 
 # No built-in server seed: profiles are purely user-supplied (added from
 # vless:// links or imported JSON configs). A pre-existing config from an
@@ -68,7 +69,8 @@ install_hint() {
     xray)
       if command -v paru >/dev/null 2>&1; then printf '%s\n' "paru -S xray-bin"; return 0; fi
       if command -v yay >/dev/null 2>&1; then printf '%s\n' "yay -S xray-bin"; return 0; fi
-      printf '%s\n' 'sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install'
+      if os_is debian || os_is ubuntu; then printf '%s\n' "sudo apt install xray"; return 0; fi
+      printf '%s\n' "install xray (https://xtls.github.io/en/install.html)"
       ;;
     python)
       if os_is arch; then printf '%s\n' "sudo pacman -S python"; else printf '%s\n' "install python3 (https://www.python.org)"; fi
@@ -189,7 +191,7 @@ active_profile() {
 
 set_active() {
   printf '%s\n' "$1" > "$ACTIVE_FILE" 2>/dev/null || return 1
-  chmod 644 "$ACTIVE_FILE" 2>/dev/null
+  chmod 600 "$ACTIVE_FILE" 2>/dev/null
   return 0
 }
 
@@ -198,11 +200,11 @@ set_active() {
 # then mirror the active profile into the live config.
 ensure_profiles_ready() {
   mkdir -p "$PROFILES_DIR" 2>/dev/null || return 1
-  chmod 755 "$PROFILES_DIR" 2>/dev/null
+  chmod 700 "$PROFILES_DIR" 2>/dev/null
   if ! ls "$PROFILES_DIR"/*.json >/dev/null 2>&1; then
     if [ -r "$CONFIG" ]; then
       cp "$CONFIG" "$PROFILES_DIR/default.json" 2>/dev/null || return 1
-      chmod 644 "$PROFILES_DIR/default.json" 2>/dev/null
+      chmod 600 "$PROFILES_DIR/default.json" 2>/dev/null
     fi
   fi
   if ! ls "$PROFILES_DIR"/*.json >/dev/null 2>&1; then
@@ -228,7 +230,7 @@ ensure_active_config() {
   a=$(active_profile)
   p="$PROFILES_DIR/$a.json"
   [ -r "$p" ] || return 1
-  cp "$p" "$CONFIG" && chmod 644 "$CONFIG"
+  cp "$p" "$CONFIG" && chmod 600 "$CONFIG"
 }
 
 unit_text() {
@@ -241,6 +243,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=$XRAY run -c $CONFIG
+ExecStartPost=/bin/sleep 0.1
+ExecStartPost=$INSTALLED_BACKEND rules-on
+ExecStopPost=$INSTALLED_BACKEND rules-off
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -252,6 +257,14 @@ EOF
 
 ensure_install() {
   mkdir -p "$CONFDIR" || return 1
+  # Copy backend.sh into the privileged directory so the systemd unit and
+  # the pkexec serve helper never re-execute a user-writable file as root.
+  local src
+  src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+  if [ "$src" != "$INSTALLED_BACKEND" ] && [ -r "$src" ]; then
+    cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
+    chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
+  fi
   ensure_profiles_ready || return 1
   [ -r "$UNIT" ] || unit_text > "$UNIT" 2>/dev/null || return 1
   [ -r "$MODE_FILE" ] || printf '%s\n' "proxy" > "$MODE_FILE" 2>/dev/null
@@ -298,6 +311,9 @@ apply_system_rules() {
     iptables -t nat -F XRAYVPN 2>/dev/null
   }
   iptables -t nat -F XRAYVPN 2>/dev/null
+  # Roll back the partially-built chain on any failure so we never leave
+  # a broken XRAYVPN dangling in the nat table.
+  trap 'remove_system_rules 2>/dev/null' ERR
   iptables -t nat -A XRAYVPN -d 127.0.0.0/8 -j RETURN 2>/dev/null
   iptables -t nat -A XRAYVPN -d 10.0.0.0/8 -j RETURN 2>/dev/null
   iptables -t nat -A XRAYVPN -d 172.16.0.0/12 -j RETURN 2>/dev/null
@@ -310,6 +326,7 @@ apply_system_rules() {
   done
   iptables -t nat -A XRAYVPN -p tcp -m multiport --dports "$REDIRECT_PORTS" -j REDIRECT --to-ports "$TPROXY_PORT" 2>/dev/null
   iptables -t nat -A OUTPUT -j XRAYVPN 2>/dev/null
+  trap - ERR
   return 0
 }
 
@@ -441,7 +458,7 @@ add_profile() {
     *[!A-Za-z0-9._-]*) echo "invalid profile name: $name" >&2; return 1 ;;
   esac
   [ -d "$PROFILES_DIR" ] || mkdir -p "$CONFDIR" "$PROFILES_DIR" 2>/dev/null || { echo "cannot create $PROFILES_DIR" >&2; return 1; }
-  chmod 755 "$PROFILES_DIR" 2>/dev/null
+  chmod 700 "$PROFILES_DIR" 2>/dev/null
   case "$input" in
     vless://*|VLESS://*)
       out=$(factory vless "$input" 2>/dev/null) || { echo "cannot parse vless:// link" >&2; return 1; }
@@ -457,7 +474,7 @@ add_profile() {
   [ -n "$name" ] || name="imported"
   [ -e "$PROFILES_DIR/$name.json" ] && { echo "profile $name already exists" >&2; return 1; }
   printf '%s\n' "$json" > "$PROFILES_DIR/$name.json" || { echo "write failed" >&2; return 1; }
-  chmod 644 "$PROFILES_DIR/$name.json" 2>/dev/null
+  chmod 600 "$PROFILES_DIR/$name.json" 2>/dev/null
   # First profile ever: activate it straight away so the tunnel is usable.
   if ! active_profile >/dev/null 2>&1; then
     set_active "$name" || return 1
@@ -585,7 +602,7 @@ for line in sys.stdin:
         respond(rid, p.returncode, p.stdout, p.stderr)
     except Exception as e:
         respond(rid, 1, "", "serve error: %s" % e)
-' "$0"
+' "$INSTALLED_BACKEND"
 }
 
 needs_root "$@"
