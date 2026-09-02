@@ -641,10 +641,11 @@ script = sys.argv[1]
 def run_cmd(args, secrets):
     argv = list(args)
     secret_input = None
-    if len(argv) >= 4 and argv[0] == "profiles" and argv[1] == "add":
-        serve_secret = secrets.pop(0, None)
-        if serve_secret is not None:
-            secret_input = serve_secret
+    if len(argv) >= 2 and argv[0] == "profiles" and argv[1] == "add":
+        if secrets:
+            secret_input = secrets.pop(0)
+        else:
+            secret_input = None
     return subprocess.run(
         [script] + argv, capture_output=True, text=True, errors="replace",
         input=secret_input,
