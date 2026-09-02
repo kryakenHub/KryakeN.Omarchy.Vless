@@ -191,7 +191,7 @@ active_profile() {
 
 set_active() {
   printf '%s\n' "$1" > "$ACTIVE_FILE" 2>/dev/null || return 1
-  chmod 600 "$ACTIVE_FILE" 2>/dev/null
+  chmod 644 "$ACTIVE_FILE" 2>/dev/null
   return 0
 }
 
@@ -200,7 +200,7 @@ set_active() {
 # then mirror the active profile into the live config.
 ensure_profiles_ready() {
   mkdir -p "$PROFILES_DIR" 2>/dev/null || return 1
-  chmod 700 "$PROFILES_DIR" 2>/dev/null
+  chmod 755 "$PROFILES_DIR" 2>/dev/null
   if ! ls "$PROFILES_DIR"/*.json >/dev/null 2>&1; then
     if [ -r "$CONFIG" ]; then
       cp "$CONFIG" "$PROFILES_DIR/default.json" 2>/dev/null || return 1
@@ -230,7 +230,7 @@ ensure_active_config() {
   a=$(active_profile)
   p="$PROFILES_DIR/$a.json"
   [ -r "$p" ] || return 1
-  cp "$p" "$CONFIG" && chmod 600 "$CONFIG"
+  cp "$p" "$CONFIG" && chmod 644 "$CONFIG"
 }
 
 unit_text() {
@@ -458,7 +458,7 @@ add_profile() {
     *[!A-Za-z0-9._-]*) echo "invalid profile name: $name" >&2; return 1 ;;
   esac
   [ -d "$PROFILES_DIR" ] || mkdir -p "$CONFDIR" "$PROFILES_DIR" 2>/dev/null || { echo "cannot create $PROFILES_DIR" >&2; return 1; }
-  chmod 700 "$PROFILES_DIR" 2>/dev/null
+  chmod 755 "$PROFILES_DIR" 2>/dev/null
   case "$input" in
     vless://*|VLESS://*)
       out=$(factory vless "$input" 2>/dev/null) || { echo "cannot parse vless:// link" >&2; return 1; }
