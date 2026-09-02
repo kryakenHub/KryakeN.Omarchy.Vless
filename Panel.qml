@@ -279,7 +279,11 @@ Panel {
     root.profileMsg = ""
     root.profileMsgIsError = false
     root._clearAddOnSuccess = true
-    root._serveEnqueue(["profiles", "add", root._addName, input],
+    // The vless:// link / JSON contains the UUID and keys: deliver it to the
+    // privileged helper over its stdin (unshift-secret), never in argv where
+    // it would be visible in the process table.
+    root._serveEnqueue(["unshift-secret", input], function() {})
+    root._serveEnqueue(["profiles", "add", root._addName],
       function(out, err, code) {
         if (out !== "") { root.profileMsg = out; root.profileMsgIsError = false }
         if (root._clearAddOnSuccess) { root._addInput = ""; root._addName = "" }

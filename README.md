@@ -83,7 +83,8 @@ so the tunnel keeps working after the plugin is gone.
 ## Profiles
 
 Profiles are stored as complete xray client configs under
-`/etc/xray-vpn/profiles/<name>.json`. The currently active one is mirrored to
+`/etc/xray-vpn/profiles/<name>.json` (mode `0600`, root-only — they contain
+UUIDs and server keys). The currently active one is mirrored to
 `/etc/xray-vpn/config.json` for the systemd service. Profiles live in
 `/etc/xray-vpn/profiles/`, never inside the plugin folder — your servers and
 keys are not shipped with the plugin.
@@ -125,9 +126,13 @@ that touches `/etc/xray-vpn`, the unit, or iptables) use `sudo` from a TTY and
 
 All privileged operations performed from the panel (toggle, mode, autostart,
 profile add/select/remove) run through a single persistent helper process:
-`pkexec backend.sh serve`. Both this plugin and `kryaken.omarchy.zapret` use the same
-shared scheme.
+`pkexec /etc/xray-vpn/backend.sh serve`. Both this plugin and
+`kryaken.omarchy.zapret` use the same shared scheme.
 
+- On first used operation, `backend.sh` is provisioned to the root-owned
+  `/etc/xray-vpn/backend.sh` (never re-copied on every action, so a tampered
+  plugin checkout cannot inject code that then runs as root; refresh it after
+  a plugin update with `sudo bash backend.sh install`).
 - The helper is **not** started at boot — only on your first privileged action
   in a shell session. Starting it is the only point where a password is asked
   (`pkexec`, `org.freedesktop.policykit.exec`, default `auth_admin` — no custom
@@ -135,13 +140,16 @@ shared scheme.
 - Every further request is sent as a JSON line over the helper's stdin and
   answered on its stdout (`{"id":...,"args":[...]} -> {"id":...,"code":...}`),
   so no password is needed again for the rest of the session.
+- `vless://` links and profile JSON (which contain UUIDs/keys) are delivered to
+  the helper over stdin, never on argv, so secrets never appear in the process
+  table.
 - The helper dies at logout (its stdin closes at session end) and holds no
   keep-alive; other `pkexec`/`sudo` programs are unaffected and keep asking for
   a password as usual.
 - Handling it by hand:
 
 ```sh
-   printf '%s\n' '{"id":1,"args":["toggle"]}' | pkexec "$HOME/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh" serve
+   printf '%s\n' '{"id":1,"args":["toggle"]}' | pkexec /etc/xray-vpn/backend.sh serve
    ```
 
 ## AI assistance

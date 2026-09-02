@@ -257,18 +257,38 @@ EOF
 
 ensure_install() {
   mkdir -p "$CONFDIR" || return 1
-  # Copy backend.sh into the privileged directory so the systemd unit and
-  # the pkexec serve helper never re-execute a user-writable file as root.
-  local src
-  src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
-  if [ "$src" != "$INSTALLED_BACKEND" ] && [ -r "$src" ]; then
-    cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
-    chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
+  # Provision a root-owned copy of backend.sh ONCE, on first use / explicit
+  # install. We deliberately do NOT re-copy from the user-writable plugin
+  # checkout on every privileged action: an attacker able to write to the
+  # plugin folder could otherwise inject code that then runs as root. The
+  # installed copy is only refreshed by the explicit `install` op (below),
+  # so a plugin update requires one intentional privileged install.
+  if [ ! -f "$INSTALLED_BACKEND" ]; then
+    local src
+    src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+    if [ -r "$src" ]; then
+      cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
+      chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
+    else
+      echo "cannot provision $INSTALLED_BACKEND" >&2
+      return 1
+    fi
   fi
   ensure_profiles_ready || return 1
   [ -r "$UNIT" ] || unit_text > "$UNIT" 2>/dev/null || return 1
   [ -r "$MODE_FILE" ] || printf '%s\n' "proxy" > "$MODE_FILE" 2>/dev/null
   sys daemon-reload
+}
+
+# Explicit privileged refresh of the installed root-owned backend. Called by
+# the `install` command (e.g. after a plugin update) — never automatically on
+# every toggle, so a tampered plugin checkout cannot feed root code.
+redeploy_backend() {
+  local src
+  src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+  [ -r "$src" ] || { echo "cannot read backend source" >&2; return 1; }
+  cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
+  chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
 }
 
 server_ips() {
@@ -311,23 +331,29 @@ apply_system_rules() {
     iptables -t nat -F XRAYVPN 2>/dev/null
   }
   iptables -t nat -F XRAYVPN 2>/dev/null
-  # Roll back the partially-built chain on any failure so we never leave
-  # a broken XRAYVPN dangling in the nat table.
-  trap 'remove_system_rules 2>/dev/null' ERR
-  iptables -t nat -A XRAYVPN -d 127.0.0.0/8 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -d 10.0.0.0/8 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -d 172.16.0.0/12 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -d 192.168.0.0/16 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -d 169.254.0.0/16 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -d 224.0.0.0/4 -j RETURN 2>/dev/null
-  iptables -t nat -A XRAYVPN -p udp --dport 53 -j RETURN 2>/dev/null
-  for ip in $(server_ips); do
-    iptables -t nat -A XRAYVPN -d "$ip" -j RETURN 2>/dev/null
-  done
-  iptables -t nat -A XRAYVPN -p tcp -m multiport --dports "$REDIRECT_PORTS" -j REDIRECT --to-ports "$TPROXY_PORT" 2>/dev/null
-  iptables -t nat -A OUTPUT -j XRAYVPN 2>/dev/null
-  trap - ERR
-  return 0
+  # Build the chain atomically; on ANY failure roll it back so we never
+  # leave a half-applied XRAYVPN dangling in the nat table.
+  _build_rules() {
+    iptables -t nat -A XRAYVPN -d 127.0.0.0/8 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -d 10.0.0.0/8 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -d 172.16.0.0/12 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -d 192.168.0.0/16 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -d 169.254.0.0/16 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -d 224.0.0.0/4 -j RETURN 2>/dev/null \
+    && iptables -t nat -A XRAYVPN -p udp --dport 53 -j RETURN 2>/dev/null
+    for ip in $(server_ips); do
+      iptables -t nat -A XRAYVPN -d "$ip" -j RETURN 2>/dev/null || return 1
+    done
+    iptables -t nat -A XRAYVPN -p tcp -m multiport --dports "$REDIRECT_PORTS" -j REDIRECT --to-ports "$TPROXY_PORT" 2>/dev/null \
+    && iptables -t nat -A OUTPUT -j XRAYVPN 2>/dev/null
+  }
+  if _build_rules; then
+    unset -f _build_rules 2>/dev/null
+    return 0
+  fi
+  unset -f _build_rules 2>/dev/null
+  remove_system_rules 2>/dev/null
+  return 1
 }
 
 remove_system_rules() {
@@ -449,6 +475,11 @@ probe_profile() {
 add_profile() {
   name="${3:-}"
   input="${4:-}"
+  # Prefer a secret fed over stdin (nothing to see in the process table),
+  # then a vless:// link / file path passed on the command line.
+  if [ -z "$input" ] && [ ! -t 0 ]; then
+    input=$(cat 2>/dev/null)
+  fi
   [ -n "$input" ] || {
     echo "usage: $0 profiles add [name] <vless://link | path-to-json>" >&2
     return 2
@@ -572,6 +603,26 @@ EOF
 # since pkexec launched us) and replies with one JSON line per request. Keeps
 # running until stdin closes, so pkexec is only ever invoked once per session.
 serve() {
+  # Privileged boundary guard: only a real, non-symlink, root-owned copy of
+  # our own backend may drive the helper. A symlink or a world-writable file
+  # here would let a non-root process substitute code that runs as root.
+  if [ ! -f "$INSTALLED_BACKEND" ] || [ -L "$INSTALLED_BACKEND" ]; then
+    echo '{"code":1,"out":"","err":"serve: installed backend missing or is a symlink"}' 
+    return 1
+  fi
+  owner=$(ls -dn -- "$INSTALLED_BACKEND" 2>/dev/null | awk '{print $3}')
+  mode=$(ls -ld -- "$INSTALLED_BACKEND" 2>/dev/null | awk '{print $1}')
+  if [ "$owner" != "root" ]; then
+    echo '{"code":1,"out":"","err":"serve: installed backend not owned by root"}'
+    return 1
+  fi
+  # Refuse if anyone other than root can write to the installed backend.
+  case "$mode" in
+    ?????????w*|?????w????*) # group or other write bit set
+      echo '{"code":1,"out":"","err":"serve: installed backend is writable by non-root"}'
+      return 1
+      ;;
+  esac
   command -v python3 >/dev/null 2>&1 || {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -582,9 +633,27 @@ serve() {
   exec python3 -c '
 import json, os, subprocess, sys
 script = sys.argv[1]
+
+# A vless:// link (or config JSON) contains the UUID/keys. Never pass it in
+# argv where it would be visible in the process table: route it over stdin
+# instead, and keep argv free of secrets.
+def run_cmd(args, secrets):
+    argv = list(args)
+    secret_input = None
+    if len(argv) >= 4 and argv[0] == "profiles" and argv[1] == "add":
+        serve_secret = secrets.pop(0, None)
+        if serve_secret is not None:
+            secret_input = serve_secret
+    return subprocess.run(
+        [script] + argv, capture_output=True, text=True, errors="replace",
+        input=secret_input,
+    )
+
 def respond(rid, code, out, err):
     sys.stdout.write(json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+secrets = []
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -598,7 +667,11 @@ for line in sys.stdin:
             raise ValueError("args must be a list of strings")
         if args and args[0] == "serve":
             raise ValueError("serve cannot nest")
-        p = subprocess.run([script] + args, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL)
+        if args and args[0] == "unshift-secret" and len(args) == 2:
+            secrets.append(args[1])
+            respond(rid, 0, "", "")
+            continue
+        p = run_cmd(args, secrets)
         respond(rid, p.returncode, p.stdout, p.stderr)
     except Exception as e:
         respond(rid, 1, "", "serve error: %s" % e)
@@ -613,6 +686,7 @@ case "$cmd" in
   installed) is_installed && echo yes || echo no ;;
   install)
     ensure_install || { echo "install failed" >&2; exit 1; }
+    redeploy_backend || { echo "backend redeploy failed" >&2; exit 1; }
     echo ok
     ;;
   start)
