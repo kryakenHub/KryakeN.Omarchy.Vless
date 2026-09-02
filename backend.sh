@@ -25,6 +25,7 @@ PROFILES_DIR="$CONFDIR/profiles"
 ACTIVE_FILE="$CONFDIR/active"
 UNIT="/etc/systemd/system/xray-vpn.service"
 INSTALLED_BACKEND="$CONFDIR/backend.sh"
+INSTALLED_FACTORY="$CONFDIR/factory.py"
 
 # No built-in server seed: profiles are purely user-supplied (added from
 # vless:// links or imported JSON configs). A pre-existing config from an
@@ -257,38 +258,44 @@ EOF
 
 ensure_install() {
   mkdir -p "$CONFDIR" || return 1
-  # Provision a root-owned copy of backend.sh ONCE, on first use / explicit
-  # install. We deliberately do NOT re-copy from the user-writable plugin
-  # checkout on every privileged action: an attacker able to write to the
-  # plugin folder could otherwise inject code that then runs as root. The
-  # installed copy is only refreshed by the explicit `install` op (below),
-  # so a plugin update requires one intentional privileged install.
-  if [ ! -f "$INSTALLED_BACKEND" ]; then
+  # Provision root-owned copies of backend.sh and factory.py ONCE, on first
+  # use / explicit install. We deliberately do NOT re-copy from the
+  # user-writable plugin checkout on every privileged action: an attacker
+  # able to write to the plugin folder could otherwise inject code that then
+  # runs as root. The installed copies are only refreshed by the explicit
+  # `install` op (below), so a plugin update requires one intentional
+  # privileged install.
+  provision() {
+    local dst="$1"
+    [ -f "$dst" ] && return 0
     local src
-    src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
-    if [ -r "$src" ]; then
-      cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
-      chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
-    else
-      echo "cannot provision $INSTALLED_BACKEND" >&2
-      return 1
-    fi
-  fi
+    src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$2")
+    [ -r "$src" ] || { echo "cannot provision $dst (missing $src)" >&2; return 1; }
+    cp -- "$src" "$dst" 2>/dev/null || return 1
+    chmod 755 "$dst" 2>/dev/null
+  }
+  provision "$INSTALLED_BACKEND" "$0" || return 1
+  provision "$INSTALLED_FACTORY" "factory.py" || return 1
   ensure_profiles_ready || return 1
   [ -r "$UNIT" ] || unit_text > "$UNIT" 2>/dev/null || return 1
   [ -r "$MODE_FILE" ] || printf '%s\n' "proxy" > "$MODE_FILE" 2>/dev/null
   sys daemon-reload
 }
 
-# Explicit privileged refresh of the installed root-owned backend. Called by
-# the `install` command (e.g. after a plugin update) — never automatically on
-# every toggle, so a tampered plugin checkout cannot feed root code.
+# Explicit privileged refresh of the installed root-owned backend + factory.
+# Called by the `install` command (e.g. after a plugin update) — never
+# automatically on every toggle, so a tampered plugin checkout cannot feed
+# root code.
 redeploy_backend() {
-  local src
+  local src fsrc
   src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+  fsrc=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/factory.py
   [ -r "$src" ] || { echo "cannot read backend source" >&2; return 1; }
   cp -- "$src" "$INSTALLED_BACKEND" 2>/dev/null || return 1
   chmod 755 "$INSTALLED_BACKEND" 2>/dev/null
+  [ -r "$fsrc" ] || { echo "cannot read factory source" >&2; return 1; }
+  cp -- "$fsrc" "$INSTALLED_FACTORY" 2>/dev/null || return 1
+  chmod 755 "$INSTALLED_FACTORY" 2>/dev/null
 }
 
 server_ips() {
@@ -621,6 +628,24 @@ serve() {
   case "$mode" in
     ?????????w*|?????w????*) # group or other write bit set
       echo '{"code":1,"out":"","err":"serve: installed backend is writable by non-root"}'
+      return 1
+      ;;
+  esac
+  # factory.py must sit next to the installed backend (it is invoked as root
+  # to build profiles); verify the same ownership/writability guards.
+  if [ ! -f "$INSTALLED_FACTORY" ] || [ -L "$INSTALLED_FACTORY" ]; then
+    echo '{"code":1,"out":"","err":"serve: installed factory missing or is a symlink"}'
+    return 1
+  fi
+  fowner=$(ls -ldn -- "$INSTALLED_FACTORY" 2>/dev/null | awk '{print $3}')
+  fmode=$(ls -ld -- "$INSTALLED_FACTORY" 2>/dev/null | awk '{print $1}')
+  if [ "$fowner" != "0" ]; then
+    echo '{"code":1,"out":"","err":"serve: installed factory not owned by root"}'
+    return 1
+  fi
+  case "$fmode" in
+    ?????????w*|?????w????*)
+      echo '{"code":1,"out":"","err":"serve: installed factory is writable by non-root"}'
       return 1
       ;;
   esac
