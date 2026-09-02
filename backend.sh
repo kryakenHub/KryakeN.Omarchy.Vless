@@ -153,7 +153,11 @@ unit_active() { [ "$(sys is-active "$SERVICE")" = "active" ]; }
 unit_enabled() { [ "$(sys is-enabled "$SERVICE")" = "enabled" ]; }
 
 is_installed() {
-  command -v xray >/dev/null 2>&1 && [ -r "$CONFIG" ] && unit_known
+  # The xray helper binary and the unit must exist. We check existence (-f),
+  # NOT readability (-r): config.json is mode 0600 (it holds the active
+  # profile's UUID/keys), so an unprivileged status check must still report
+  # installed without being able to read the secret.
+  command -v xray >/dev/null 2>&1 && [ -f "$CONFIG" ] && unit_known
 }
 
 get_mode() {
@@ -231,7 +235,7 @@ ensure_active_config() {
   a=$(active_profile)
   p="$PROFILES_DIR/$a.json"
   [ -r "$p" ] || return 1
-  cp "$p" "$CONFIG" && chmod 644 "$CONFIG"
+  cp "$p" "$CONFIG" && chmod 600 "$CONFIG"
 }
 
 unit_text() {
