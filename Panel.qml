@@ -242,8 +242,18 @@ Panel {
     if (o.code === 0) {
       if (item.ok) item.ok(String(o.out || ""), String(o.err || ""), Number(o.code))
     } else {
-      if (item.err) item.err(Number(o.code), String(o.out || ""), String(o.err || ""))
-      else if (item.ok) item.ok(String(o.out || ""), String(o.err || ""), Number(o.code))
+      // If a *live* serve helper could not be re-executed because the
+      // installed backend was deleted, mark the helper missing so the next
+      // use bootstraps it again.
+      var serr = String(o.err || "")
+      if (serr.indexOf("No such file") >= 0 || serr.indexOf("not found") >= 0) {
+        Model.state.helperPresent = false
+        root._serveUp = false
+        serveProcess.running = false
+        console.log("[kryaken.omarchy.vless] helper reported missing, will re-bootstrap")
+      }
+      if (item.err) item.err(Number(o.code), String(o.out || ""), serr)
+      else if (item.ok) item.ok(String(o.out || ""), serr, Number(o.code))
     }
   }
 
@@ -271,7 +281,7 @@ Panel {
       function(code, out, err) {
         Model.state.error = (err || "toggle failed").trim()
         root._error = Model.state.error
-        if (root._error !== "") root.errorDismiss.restart()
+        if (root._error !== "") errorDismiss.restart()
       })
   }
 
@@ -284,7 +294,7 @@ Panel {
       function(code, out, err) {
         Model.state.error = (err || "mode change failed").trim()
         root._error = Model.state.error
-        if (root._error !== "") root.errorDismiss.restart()
+        if (root._error !== "") errorDismiss.restart()
       })
   }
 
@@ -296,7 +306,7 @@ Panel {
       function(code, out, err) {
         Model.state.error = (err || "autostart change failed").trim()
         root._error = Model.state.error
-        if (root._error !== "") root.errorDismiss.restart()
+        if (root._error !== "") errorDismiss.restart()
       })
   }
 
@@ -559,6 +569,16 @@ Panel {
     onExited: function(exitCode) {
       root._serveUp = false
       var stderr = String(serveStderr.text || "").trim()
+      // If pkexec could not even start the helper (missing target -> 127, or
+      // python telling us /etc/xray-vpn/backend.sh is gone), mark the helper
+      // as missing so the next toggle re-bootstraps instead of trying again.
+      if (exitCode !== 0
+          && (String(exitCode) === "127"
+              || stderr.indexOf("No such file") >= 0
+              || stderr.indexOf("not found") >= 0)) {
+        Model.state.helperPresent = false
+        console.log("[kryaken.omarchy.vless] helper missing, next use will bootstrap")
+      }
       root._serveFailAll("privilege helper exited (" + exitCode + ")" + (stderr ? ": " + stderr : ""))
       console.log("[kryaken.omarchy.vless] serve exited: " + exitCode + " stderr=" + stderr)
     }
