@@ -170,16 +170,14 @@ Panel {
             ? (root.isSystemMode ? "System · Active" : "Proxy · Active")
             : (root.isSystemMode ? "System · Standby" : "Proxy · Standby"))
 
-  // The privileged helper (/etc/xray-vpn/backend.sh) exists only after the
-  // one-shot `install` has provisioned it from the plugin checkout. Until
-  // then we cannot pkexec it (missing target -> exit 127), so bootstrap it
-  // automatically on first use instead of requiring the user to run a manual
-  // install command. `install` is idempotent: ensure_install() returns early
-  // without re-reading the user-writable checkout when already provisioned.
-  //
-  // We re-check helper presence on every status poll (Model.state.helperPresent)
-  // so a deleted /etc/xray-vpn back/ after setup still triggers a re-bootstrap
-  // instead of failing with a pkexec 127.
+  // First install creates /etc/xray-vpn/backend.sh from the plugin checkout
+  // automatically (a fresh setup where nothing exists yet). Afterwards, if
+  // the root-owned helper is deleted, we do NOT try to restore it (that caused
+  // an endless pkexec password loop) — we surface a clear error telling the
+  // user to reinstall the plugin.
+  // `_provisionedOnce` records that /etc/xray-vpn was created in this session,
+  // so a later missing helper reports an error instead of re-provisioning.
+  property bool _provisionedOnce: false
   property bool _bootstrapInFlight: false
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
@@ -198,13 +196,16 @@ Panel {
 
   function _serveEnsure() {
     if (serveProcess.running) return
-    // If the privileged helper /etc/xray-vpn/backend.sh is present, start the
-    // serve process directly. If it is missing (fresh install, or an existing
-    // setup whose /etc/xray-vpn was deleted), bootstrap it from the plugin
-    // checkout first — pkexec on a missing target would exit 127.
     if (Model.state.helperPresent) {
+      root._provisionedOnce = true
       root._bootstrapInFlight = false
+    } else if (root._provisionedOnce) {
+      // /etc/xray-vpn was created earlier but the helper is gone now: honest
+      // error, no automatic re-provision, no repeated password prompt.
+      root._serveFailAll("VPN helper missing: /etc/xray-vpn/backend.sh was deleted. Reinstall the plugin.")
+      return
     } else if (!root._bootstrapInFlight) {
+      // Genuine first install (nothing provisioned yet): create /etc/xray-vpn once.
       root._bootstrapInFlight = true
       bootProc.command = ["pkexec", root.daemonScriptPath, "install"]
       bootProc.running = true
@@ -242,16 +243,7 @@ Panel {
     if (o.code === 0) {
       if (item.ok) item.ok(String(o.out || ""), String(o.err || ""), Number(o.code))
     } else {
-      // If a *live* serve helper could not be re-executed because the
-      // installed backend was deleted, mark the helper missing so the next
-      // use bootstraps it again.
       var serr = String(o.err || "")
-      if (serr.indexOf("No such file") >= 0 || serr.indexOf("not found") >= 0) {
-        Model.state.helperPresent = false
-        root._serveUp = false
-        serveProcess.running = false
-        console.log("[kryaken.omarchy.vless] helper reported missing, will re-bootstrap")
-      }
       if (item.err) item.err(Number(o.code), String(o.out || ""), serr)
       else if (item.ok) item.ok(String(o.out || ""), serr, Number(o.code))
     }
@@ -569,16 +561,6 @@ Panel {
     onExited: function(exitCode) {
       root._serveUp = false
       var stderr = String(serveStderr.text || "").trim()
-      // If pkexec could not even start the helper (missing target -> 127, or
-      // python telling us /etc/xray-vpn/backend.sh is gone), mark the helper
-      // as missing so the next toggle re-bootstraps instead of trying again.
-      if (exitCode !== 0
-          && (String(exitCode) === "127"
-              || stderr.indexOf("No such file") >= 0
-              || stderr.indexOf("not found") >= 0)) {
-        Model.state.helperPresent = false
-        console.log("[kryaken.omarchy.vless] helper missing, next use will bootstrap")
-      }
       root._serveFailAll("privilege helper exited (" + exitCode + ")" + (stderr ? ": " + stderr : ""))
       console.log("[kryaken.omarchy.vless] serve exited: " + exitCode + " stderr=" + stderr)
     }
@@ -597,6 +579,7 @@ Panel {
       root._bootstrapInFlight = false
       var err = String(bootStderr.text || "")
       if (exitCode === 0) {
+        root._provisionedOnce = true
         console.log("[kryaken.omarchy.vless] bootstrap install ok")
         root._serveEnsure()
       } else {
