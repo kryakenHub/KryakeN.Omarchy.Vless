@@ -3,7 +3,7 @@
   "id": "kryaken.omarchy.vless",
   "name": "VLESS VPN",
   "version": "0.3.0",
-  "author": "poseydon",
+  "author": "KryakeN",
   "license": "MIT",
   "description": "An Omarchy bar widget for an Xray VLESS tunnel: local SOCKS/HTTP proxy or system-wide transparent mode, autostart, connection test and logs (Omarchy + Quickshell).",
   "kinds": [
