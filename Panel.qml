@@ -156,6 +156,12 @@ Panel {
   // invocations so we never re-execute a user-writable script as root.
   readonly property string privilegedScriptPath: "/etc/xray-vpn/backend.sh"
 
+  // Friendly guidance shown when the privileged helper file is missing (the
+  // user deleted /etc/xray-vpn, or the plugin needs a reinstall).
+  readonly property string msgHelperMissing:
+    "VPN backend is missing: /etc/xray-vpn/backend.sh was deleted. " +
+    "Try \"omarchy restart shell\" or reinstall the plugin."
+
   // Copy-pasteable commands for onboarding (shown while a dependency is
   // missing): install a package, or re-validate the whole setup in a terminal.
   readonly property string doctorCommand:
@@ -218,7 +224,7 @@ Panel {
     if (root._provisionedOnce) {
       // /etc/xray-vpn was created earlier but the helper is gone now: honest
       // error, no automatic re-provision, no repeated password prompt.
-      root._serveFailAll("VPN helper missing: /etc/xray-vpn/backend.sh was deleted. Reinstall the plugin.")
+      root._serveFailAll(root.msgHelperMissing)
       return
     }
     if (!root._bootstrapInFlight) {
@@ -258,6 +264,14 @@ Panel {
       if (item.ok) item.ok(String(o.out || ""), String(o.err || ""), Number(o.code))
     } else {
       var serr = String(o.err || "")
+      // A live serve helper whose backend.sh disappeared returns a friendly
+      // marker instead of the raw '[Errno 2]' python trace.
+      if (serr.indexOf("KRYAKEN_HELPER_MISSING") >= 0) {
+        root._serveUp = false
+        serveProcess.running = false
+        serr = root.msgHelperMissing
+        console.log("[kryaken.omarchy.vless] helper missing during serve")
+      }
       if (item.err) item.err(Number(o.code), String(o.out || ""), serr)
       else if (item.ok) item.ok(String(o.out || ""), serr, Number(o.code))
     }
@@ -1217,7 +1231,7 @@ Panel {
 
         Rectangle {
           width: parent.width
-          height: Math.max(errCopyFlash.height, errorText.implicitHeight) + Style.space(12)
+          height: (root._errorFlash ? errCopyFlash.height : errorText.implicitHeight) + Style.space(12)
           radius: Style.cornerRadius || 2
           color: root.alpha(root.foregroundColor, 0.05)
           border.color: root.alpha(root.dimColor, 0.25)
@@ -1241,7 +1255,10 @@ Panel {
 
           Text {
             id: errCopyFlash
-            width: parent.width - Style.space(16)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: Style.space(6)
             visible: root._errorFlash
             text: "Copied ✓"
             font.family: root.panelFont

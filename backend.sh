@@ -679,6 +679,8 @@ script = sys.argv[1]
 def run_cmd(args, secrets):
     argv = list(args)
     secret_input = None
+    if not os.path.exists(script):
+        return _Missing(script)
     if len(argv) >= 2 and argv[0] == "profiles" and argv[1] == "add":
         if secrets:
             secret_input = secrets.pop(0)
@@ -688,6 +690,13 @@ def run_cmd(args, secrets):
         [script] + argv, capture_output=True, text=True, errors="replace",
         input=secret_input,
     )
+
+def _Missing(path):
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "KRYAKEN_HELPER_MISSING: %s" % path
+    return R()
 
 def respond(rid, code, out, err):
     sys.stdout.write(json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True) + "\n")
@@ -714,7 +723,10 @@ for line in sys.stdin:
         p = run_cmd(args, secrets)
         respond(rid, p.returncode, p.stdout, p.stderr)
     except Exception as e:
-        respond(rid, 1, "", "serve error: %s" % e)
+        if "No such file" in str(e) or "KRYAKEN_HELPER_MISSING" in str(e):
+            respond(rid, 1, "", "KRYAKEN_HELPER_MISSING: %s" % script)
+        else:
+            respond(rid, 1, "", "serve error: %s" % e)
 ' "$INSTALLED_BACKEND"
 }
 
