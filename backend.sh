@@ -388,9 +388,14 @@ refresh_rules() {
 
 status_json() {
   deps_s=$(deps_json)
+  # Distinct from is_installed: helperPresent tells the panel whether the
+  # privileged helper /etc/xray-vpn/backend.sh physically exists, so it can
+  # re-bootstrap when an installed setup's helper was deleted.
+  helper="false"
+  [ -f "$INSTALLED_BACKEND" ] && helper="true"
   command -v systemctl >/dev/null 2>&1 || {
-    printf '{"installed":false,"active":false,"enabled":false,"mode":"proxy","config":null,"configFile":null,"profiles":[],"activeProfile":"","server":"","error":"systemctl not available","deps":%s}\n' \
-      "$deps_s"
+    printf '{"installed":false,"active":false,"enabled":false,"mode":"proxy","config":null,"configFile":null,"profiles":[],"activeProfile":"","server":"","helperPresent":%s,"error":"systemctl not available","deps":%s}\n' \
+      "$helper" "$deps_s"
     return 0
   }
   inst=false
@@ -423,8 +428,8 @@ status_json() {
     srv="\"$serversafe\""
     aq="\"\""
   fi
-  printf '{"installed":%s,"active":%s,"enabled":%s,"mode":"%s","config":%s,"configFile":%s,"profiles":%s,"activeProfile":%s,"server":%s,"error":"","deps":%s}\n' \
-    "$inst" "$act" "$ena" "$(get_mode)" "$cfg_line" "$cf_line" "$plist" "$aq" "$srv" "$deps_s"
+  printf '{"installed":%s,"active":%s,"enabled":%s,"mode":"%s","config":%s,"configFile":%s,"profiles":%s,"activeProfile":%s,"server":%s,"helperPresent":%s,"error":"","deps":%s}\n' \
+    "$inst" "$act" "$ena" "$(get_mode)" "$cfg_line" "$cf_line" "$plist" "$aq" "$srv" "$helper" "$deps_s"
 }
 
 test_json() {

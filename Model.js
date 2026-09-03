@@ -13,6 +13,7 @@ var state = {
   error: "",
   profiles: [],
   activeProfile: "",
+  helperPresent: true,
   deps: []
 }
 
@@ -29,6 +30,7 @@ function reset() {
   state.error = ""
   state.profiles = []
   state.activeProfile = ""
+  state.helperPresent = true
   state.deps = []
 }
 
@@ -52,6 +54,7 @@ function parseStatus(raw) {
     state.error = String(o.error || "")
     state.profiles = Array.isArray(o.profiles) ? o.profiles.map(String) : []
     state.activeProfile = String(o.activeProfile || "")
+    state.helperPresent = o.helperPresent !== false
     state.deps = Array.isArray(o.deps) ? o.deps.map(function(d) {
       return { n: String(d.n || ""), ok: !!d.ok, h: String(d.h || "") }
     }) : []

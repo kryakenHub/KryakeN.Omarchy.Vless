@@ -82,6 +82,9 @@ Panel {
   property string _exitIp: ""
   property int _latencyMs: 0
   property string _error: ""
+  // True right after the user taps the error banner to copy it: the banner
+  // briefly shows "Copied ✓" instead of the error text (never overlapping).
+  property bool _errorFlash: false
   property var _profiles: []
   property string _activeProfile: ""
   property var _deps: []
@@ -106,11 +109,12 @@ Panel {
     interval: 9000
     onTriggered: root._error = ""
   }
-  // "Copied ✓" flash when the user taps the error banner to copy it.
+  // "Copied ✓" flash when the user taps the error banner to copy it (replaces
+  // the error text briefly so the two never overlap).
   Timer {
     id: errCopyHint
     interval: 1200
-    onTriggered: errCopyFlash.visible = false
+    onTriggered: root._errorFlash = false
   }
   // TextInput содержимое (ids дочерних полей не резолвятся из root-скоупа —
   // грузим значение в свойство и читаем его).
@@ -172,7 +176,10 @@ Panel {
   // automatically on first use instead of requiring the user to run a manual
   // install command. `install` is idempotent: ensure_install() returns early
   // without re-reading the user-writable checkout when already provisioned.
-  property bool _booted: false
+  //
+  // We re-check helper presence on every status poll (Model.state.helperPresent)
+  // so a deleted /etc/xray-vpn back/ after setup still triggers a re-bootstrap
+  // instead of failing with a pkexec 127.
   property bool _bootstrapInFlight: false
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
@@ -191,12 +198,13 @@ Panel {
 
   function _serveEnsure() {
     if (serveProcess.running) return
-    // If the setup already reports installed, the privileged helper /etc/...
-    // exists, so skip the bootstrap prompt entirely.
-    if (root.isInstalled) root._booted = true
-    // Bootstrap the privileged helper from the plugin checkout on first use
-    // (pkexec target missing on a fresh install -> 127 otherwise).
-    if (!root._booted && !root._bootstrapInFlight) {
+    // If the privileged helper /etc/xray-vpn/backend.sh is present, start the
+    // serve process directly. If it is missing (fresh install, or an existing
+    // setup whose /etc/xray-vpn was deleted), bootstrap it from the plugin
+    // checkout first — pkexec on a missing target would exit 127.
+    if (Model.state.helperPresent) {
+      root._bootstrapInFlight = false
+    } else if (!root._bootstrapInFlight) {
       root._bootstrapInFlight = true
       bootProc.command = ["pkexec", root.daemonScriptPath, "install"]
       bootProc.running = true
@@ -569,7 +577,6 @@ Panel {
       root._bootstrapInFlight = false
       var err = String(bootStderr.text || "")
       if (exitCode === 0) {
-        root._booted = true
         console.log("[kryaken.omarchy.vless] bootstrap install ok")
         root._serveEnsure()
       } else {
@@ -1198,29 +1205,32 @@ Panel {
             font.pixelSize: Style.font.caption
             color: "#EF4444"
             elide: Text.ElideRight
+            visible: !root._errorFlash
+          }
+
+          Text {
+            id: errCopyFlash
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Copied ✓"
+            font.family: root.panelFont
+            font.pixelSize: Style.font.caption
+            color: "#10B981"
+            horizontalAlignment: Text.AlignHCenter
+            visible: root._errorFlash
           }
 
           TapHandler {
             onTapped: {
               if (root.lastError !== "") {
                 Quickshell.clipboardText = root.lastError
-                errCopyFlash.visible = true
+                root._errorFlash = true
                 errCopyHint.restart()
               }
             }
             cursorShape: Qt.PointingHandCursor
-          }
-
-          Text {
-            id: errCopyFlash
-            anchors.right: parent.right
-            anchors.rightMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Copied ✓"
-            font.family: root.panelFont
-            font.pixelSize: Style.font.caption
-            color: "#10B981"
-            visible: false
           }
         }
       }
