@@ -110,7 +110,7 @@ Panel {
   Timer {
     id: errCopyHint
     interval: 1200
-    onTriggered: errCopyHint.visible = false
+    onTriggered: errCopyFlash.visible = false
   }
   // TextInput содержимое (ids дочерних полей не резолвятся из root-скоупа —
   // грузим значение в свойство и читаем его).
@@ -1204,6 +1204,7 @@ Panel {
             onTapped: {
               if (root.lastError !== "") {
                 Quickshell.clipboardText = root.lastError
+                errCopyFlash.visible = true
                 errCopyHint.restart()
               }
             }
@@ -1211,7 +1212,7 @@ Panel {
           }
 
           Text {
-            id: errCopyHint
+            id: errCopyFlash
             anchors.right: parent.right
             anchors.rightMargin: Style.space(6)
             anchors.verticalCenter: parent.verticalCenter
