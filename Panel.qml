@@ -106,6 +106,12 @@ Panel {
     interval: 9000
     onTriggered: root._error = ""
   }
+  // "Copied ✓" flash when the user taps the error banner to copy it.
+  Timer {
+    id: errCopyHint
+    interval: 1200
+    onTriggered: errCopyHint.visible = false
+  }
   // TextInput содержимое (ids дочерних полей не резолвятся из root-скоупа —
   // грузим значение в свойство и читаем его).
   property string _addInput: ""
@@ -160,6 +166,15 @@ Panel {
             ? (root.isSystemMode ? "System · Active" : "Proxy · Active")
             : (root.isSystemMode ? "System · Standby" : "Proxy · Standby"))
 
+  // The privileged helper (/etc/xray-vpn/backend.sh) exists only after the
+  // one-shot `install` has provisioned it from the plugin checkout. Until
+  // then we cannot pkexec it (missing target -> exit 127), so bootstrap it
+  // automatically on first use instead of requiring the user to run a manual
+  // install command. `install` is idempotent: ensure_install() returns early
+  // without re-reading the user-writable checkout when already provisioned.
+  property bool _booted: false
+  property bool _bootstrapInFlight: false
+
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
   function _serveEnqueue(args, okCb, errCb) {
@@ -176,6 +191,17 @@ Panel {
 
   function _serveEnsure() {
     if (serveProcess.running) return
+    // If the setup already reports installed, the privileged helper /etc/...
+    // exists, so skip the bootstrap prompt entirely.
+    if (root.isInstalled) root._booted = true
+    // Bootstrap the privileged helper from the plugin checkout on first use
+    // (pkexec target missing on a fresh install -> 127 otherwise).
+    if (!root._booted && !root._bootstrapInFlight) {
+      root._bootstrapInFlight = true
+      bootProc.command = ["pkexec", root.daemonScriptPath, "install"]
+      bootProc.running = true
+      return
+    }
     serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
     serveProcess.running = true
   }
@@ -524,8 +550,32 @@ Panel {
     }
     onExited: function(exitCode) {
       root._serveUp = false
-      root._serveFailAll("privilege helper exited (" + exitCode + ")")
-      console.log("[kryaken.omarchy.vless] serve exited: " + exitCode)
+      var stderr = String(serveStderr.text || "").trim()
+      root._serveFailAll("privilege helper exited (" + exitCode + ")" + (stderr ? ": " + stderr : ""))
+      console.log("[kryaken.omarchy.vless] serve exited: " + exitCode + " stderr=" + stderr)
+    }
+  }
+
+  // One-shot bootstrap: provisions /etc/xray-vpn/backend.sh + factory.py from
+  // the plugin checkout via the plugin's own `install` command (pkexec).
+  Process {
+    id: bootProc
+    running: false
+    command: []
+    stdout: StdioCollector { id: bootStdout; waitForEnd: true }
+    stderr: StdioCollector { id: bootStderr; waitForEnd: true }
+    onStarted: { console.log("[kryaken.omarchy.vless] bootstrap install up") }
+    onExited: function(exitCode) {
+      root._bootstrapInFlight = false
+      var err = String(bootStderr.text || "")
+      if (exitCode === 0) {
+        root._booted = true
+        console.log("[kryaken.omarchy.vless] bootstrap install ok")
+        root._serveEnsure()
+      } else {
+        console.log("[kryaken.omarchy.vless] bootstrap install failed rc=" + exitCode + " err=" + err)
+        root._serveFailAll("privilege helper setup failed (" + exitCode + "): " + err)
+      }
     }
   }
 
@@ -1138,6 +1188,7 @@ Panel {
           visible: root.lastError !== ""
 
           Text {
+            id: errorText
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.margins: Style.space(8)
@@ -1147,6 +1198,28 @@ Panel {
             font.pixelSize: Style.font.caption
             color: "#EF4444"
             elide: Text.ElideRight
+          }
+
+          TapHandler {
+            onTapped: {
+              if (root.lastError !== "") {
+                Quickshell.clipboardText = root.lastError
+                errCopyHint.restart()
+              }
+            }
+            cursorShape: Qt.PointingHandCursor
+          }
+
+          Text {
+            id: errCopyHint
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Copied ✓"
+            font.family: root.panelFont
+            font.pixelSize: Style.font.caption
+            color: "#10B981"
+            visible: false
           }
         }
       }
