@@ -179,6 +179,7 @@ Panel {
   // so a later missing helper reports an error instead of re-provisioning.
   property bool _provisionedOnce: false
   property bool _bootstrapInFlight: false
+  property bool _checkInFlight: false
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -195,24 +196,37 @@ Panel {
   }
 
   function _serveEnsure() {
-    if (serveProcess.running) return
-    if (Model.state.helperPresent) {
+    if (serveProcess.running || root._checkInFlight) return
+    // Always stat /etc/xray-vpn/backend.sh right now rather than trusting a
+    // cached status value, so a folder deleted moments ago is caught here and
+    // never reaches a doomed pkexec serve (which fails asynchronously with a
+    // truncated 'serve error: [Errno 2] No such file...' banner).
+    root._checkInFlight = true
+    helperCheck.command = ["test", "-f", root.privilegedScriptPath]
+    helperCheck.running = true
+  }
+
+  function _onHelperChecked(exists) {
+    root._checkInFlight = false
+    if (exists) {
       root._provisionedOnce = true
       root._bootstrapInFlight = false
-    } else if (root._provisionedOnce) {
+      serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
+      serveProcess.running = true
+      return
+    }
+    if (root._provisionedOnce) {
       // /etc/xray-vpn was created earlier but the helper is gone now: honest
       // error, no automatic re-provision, no repeated password prompt.
       root._serveFailAll("VPN helper missing: /etc/xray-vpn/backend.sh was deleted. Reinstall the plugin.")
       return
-    } else if (!root._bootstrapInFlight) {
+    }
+    if (!root._bootstrapInFlight) {
       // Genuine first install (nothing provisioned yet): create /etc/xray-vpn once.
       root._bootstrapInFlight = true
       bootProc.command = ["pkexec", root.daemonScriptPath, "install"]
       bootProc.running = true
-      return
     }
-    serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
-    serveProcess.running = true
   }
 
   function _serveFlush() {
@@ -563,6 +577,19 @@ Panel {
       var stderr = String(serveStderr.text || "").trim()
       root._serveFailAll("privilege helper exited (" + exitCode + ")" + (stderr ? ": " + stderr : ""))
       console.log("[kryaken.omarchy.vless] serve exited: " + exitCode + " stderr=" + stderr)
+    }
+  }
+
+  // Quick unprivileged stat of /etc/xray-vpn/backend.sh to decide between
+  // serving directly, first-install bootstrap, or a "reinstall" error. Run
+  // before every serve so a just-deleted helper is always caught.
+  Process {
+    id: helperCheck
+    running: false
+    command: []
+    onStarted: { console.log("[kryaken.omarchy.vless] helper check up") }
+    onExited: function(exitCode) {
+      root._onHelperChecked(exitCode === 0)
     }
   }
 
@@ -1190,7 +1217,7 @@ Panel {
 
         Rectangle {
           width: parent.width
-          height: Style.space(34)
+          height: Math.max(errCopyFlash.height, errorText.implicitHeight) + Style.space(12)
           radius: Style.cornerRadius || 2
           color: root.alpha(root.foregroundColor, 0.05)
           border.color: root.alpha(root.dimColor, 0.25)
@@ -1201,28 +1228,26 @@ Panel {
             id: errorText
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.margins: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.margins: Style.space(6)
             text: root.lastError
             font.family: root.panelFont
             font.pixelSize: Style.font.caption
             color: "#EF4444"
-            elide: Text.ElideRight
+            wrapMode: Text.WordWrap
             visible: !root._errorFlash
           }
 
           Text {
             id: errCopyFlash
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.margins: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - Style.space(16)
+            visible: root._errorFlash
             text: "Copied ✓"
             font.family: root.panelFont
             font.pixelSize: Style.font.caption
             color: "#10B981"
             horizontalAlignment: Text.AlignHCenter
-            visible: root._errorFlash
           }
 
           TapHandler {
