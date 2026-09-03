@@ -88,6 +88,8 @@ Panel {
   property string profileMsg: ""
   // Профиль-сообщение: success = зелёный, ошибка = красный (см. рендеринг).
   property bool profileMsgIsError: false
+  // True while a profile probe is in flight (runs via the serve helper).
+  property bool _probing: false
   // Статус-сообщение (probe / операции с профилями) исчезает само через 5 с.
   Timer {
     id: profileMsgDismiss
@@ -131,7 +133,7 @@ Panel {
   readonly property string lastError: root._error
   readonly property bool isBusy: root._serveInFlight > 0 || testProcess.running
   readonly property bool isTesting: testProcess.running
-  readonly property bool isProbing: probeProcess.running
+  readonly property bool isProbing: root._probing
 
   readonly property color foregroundColor: root.bar && root.bar.foreground !== undefined ? root.bar.foreground : Color.foreground
   readonly property color dimColor: Qt.darker(root.foregroundColor, 1.4)
@@ -336,11 +338,32 @@ Panel {
   }
 
   function probeProfile(name) {
-    if (probeProcess.running) return
+    if (root.isBusy) return
+    // Probe must read the profile (mode 0600, root-only) and launch its own
+    // temporary xray, so it runs through the privileged serve helper rather
+    // than an unprivileged backend.sh that cannot open the profile.
     root.profileMsg = "Probing " + name + "…"
-    probeProcess.command = [root.daemonScriptPath, "probe", name]
-    probeProcess.running = true
-    probeGuard.restart()
+    root.profileMsgIsError = false
+    root._probing = true
+    root._serveEnqueue(["probe", name],
+      function(out, err, code) {
+        root._probing = false
+        var p = Model.parseProbe(out)
+        if (p.ok && p.ip !== "") {
+          root.profileMsg = "Probe ok · " + p.ip + (p.ms > 0 ? " · " + p.ms + "ms" : "")
+          root.profileMsgIsError = false
+        } else {
+          root.profileMsg = p.error || "Probe failed"
+          root.profileMsgIsError = true
+        }
+        root.refreshStatus()
+      },
+      function(code, out, err) {
+        root._probing = false
+        root.profileMsg = (err || out || "probe failed").trim()
+        root.profileMsgIsError = true
+        root.refreshStatus()
+      })
   }
 
   function open() {
@@ -454,37 +477,6 @@ Panel {
     }
   }
 
-  Process {
-    id: probeProcess
-    running: false
-    command: []
-    stdout: StdioCollector { id: probeStdout; waitForEnd: true }
-    onExited: function(exitCode) {
-      probeGuard.stop()
-      var out = String(probeStdout.text || "").trim()
-      var p = Model.parseProbe(out)
-      if (p.ok && p.ip !== "") {
-        root.profileMsg = "Probe ok · " + p.ip + (p.ms > 0 ? " · " + p.ms + "ms" : "")
-      } else if (exitCode === 0) {
-        root.profileMsg = p.error || "Probe failed"
-      } else {
-        root.profileMsg = "probe failed"
-      }
-    }
-  }
-
-  Timer {
-    id: probeGuard
-    interval: 20000
-    repeat: false
-    onTriggered: {
-      if (probeProcess.running) {
-        console.log("[kryaken.omarchy.vless] probe watchdog: aborting stuck probe process")
-        probeProcess.running = false
-        root.profileMsg = "probe timeout"
-      }
-    }
-  }
 
   // Watchdogs: if a backend process never terminates (polkit/systemd stall
   // during shell load), abort it so polling and toggles recover.
