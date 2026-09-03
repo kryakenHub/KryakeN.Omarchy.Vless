@@ -45,8 +45,9 @@ bash ~/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh doctor
    omarchy plugin add https://github.com/kryakenHub/KryakeN.Omarchy.Vless.git --enable
    ```
 
-2. Restart the shell and open the VPN panel. Add your first profile (below),
-   then toggle the tunnel on.
+2. Open the VPN panel. `omarchy plugin add` already hot-reloads the shell's
+   plugin list (`rescanPlugins`), so no shell restart is needed. Add your first
+   profile (below), then toggle the tunnel on.
 
 A fresh install starts with **no profiles** — add your first one in the
 panel. If a previous `/etc/xray-vpn/config.json` from an older install
@@ -59,6 +60,7 @@ Alternatively, install manually:
 git clone https://github.com/kryakenHub/KryakeN.Omarchy.Vless.git
 cp -r KryakeN.Omarchy.Vless ~/.config/omarchy/plugins/kryaken.omarchy.vless
 omarchy plugin validate "~/.config/omarchy/plugins/kryaken.omarchy.vless"
+omarchy-shell shell rescanPlugins   # tell the running shell about the new plugin (no restart needed)
 ```
 
 Then add the widget to the bar in `~/.config/omarchy/shell.json`, e.g. in
