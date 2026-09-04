@@ -9,14 +9,14 @@ plugin panel, grouped by where they originate.
 |------|---------|------------|
 | 0    | Success. | Nothing. |
 | 1    | A command or the backend failed (see stderr for detail). | Read the accompanying message; most map to one of the markers below. |
-| 127  | "command not found". Most often the privileged helper `/etc/xray-vpn/backend.sh` does not exist. | `/etc/xray-vpn/` was removed or the plugin was never installed. The panel never re-creates it automatically: run `omarchy restart shell` or reinstall, then provision with `bash ~/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh install`. |
+| 127  | "command not found". Most often the privileged helper `/etc/xray-vpn/backend.sh` does not exist. | `/etc/xray-vpn/` was removed or the plugin was never installed. The panel never re-creates it (restarting the shell will NOT restore it): provision with `sudo bash ~/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh install`. |
 | 126  | The helper exists but is not executable, or a permission problem. | Check permissions: `ls -l /etc/xray-vpn/backend.sh`; it should be `-rwxr-xr-x root root`. |
 
 ## Serve markers (returned over the serve helper's JSON channel)
 
 | Marker / text | Meaning | What to do |
 |---------------|---------|------------|
-| `KRYAKEN_HELPER_MISSING` (`No such file or directory: /etc/xray-vpn/backend.sh`) | The root-owned backend was deleted while the session was running (or on a fresh install before provisioning). The panel shows a friendly notice instead of the raw error. | Run `omarchy restart shell` or reinstall the plugin. |
+| `KRYAKEN_HELPER_MISSING` (`No such file or directory: /etc/xray-vpn/backend.sh`) | The root-owned backend was deleted while the session was running (or on a fresh install before provisioning). The panel shows a friendly notice instead of the raw error. | Recreate it with `sudo bash ~/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh install`. Restarting the shell alone will not restore it. |
 | `serve: installed backend missing or is a symlink` | `/etc/xray-vpn/backend.sh` is absent or a symlink (security guard). | Reinstall the plugin so the real root-owned file is restored. |
 | `serve: installed backend not owned by root (uid=...)` | The helper's owner is not root. | Reinstall the plugin; ensure the file is owned by root. |
 | `serve: installed backend is writable by non-root` | Someone other than root can write the helper (security guard). | Reinstall the plugin and fix permissions to `0755 root:root`. |

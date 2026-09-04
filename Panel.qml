@@ -157,15 +157,20 @@ Panel {
   readonly property string privilegedScriptPath: "/etc/xray-vpn/backend.sh"
 
   // Friendly guidance shown when the privileged helper file is missing (the
-  // user deleted /etc/xray-vpn, or the plugin needs a reinstall).
+  // user deleted /etc/xray-vpn, or the plugin needs a reinstall). The panel
+  // never re-creates the folder, so we point at the one command that does.
   readonly property string msgHelperMissing:
     "VPN backend is missing: /etc/xray-vpn/backend.sh was deleted. " +
-    "Try \"omarchy restart shell\" or reinstall the plugin."
+    "The panel will not recreate it. Run \"" + root.installCommand + "\""
 
   // Copy-pasteable commands for onboarding (shown while a dependency is
   // missing): install a package, or re-validate the whole setup in a terminal.
   readonly property string doctorCommand:
     "bash ~/.config/omarchy/plugins/" + root.moduleName + "/backend.sh doctor"
+
+  // The only command that (re)creates /etc/xray-vpn. The panel never does it.
+  readonly property string installCommand:
+    "sudo bash ~/.config/omarchy/plugins/" + root.moduleName + "/backend.sh install"
 
   readonly property string statusMeta:
     !root.isInstalled
