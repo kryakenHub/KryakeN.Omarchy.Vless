@@ -9,7 +9,7 @@ plugin panel, grouped by where they originate.
 |------|---------|------------|
 | 0    | Success. | Nothing. |
 | 1    | A command or the backend failed (see stderr for detail). | Read the accompanying message; most map to one of the markers below. |
-| 127  | "command not found". Most often the privileged helper `/etc/xray-vpn/backend.sh` does not exist. | `/etc/xray-vpn/` was removed or the plugin was never installed. Run `omarchy restart shell` or reinstall the plugin. |
+| 127  | "command not found". Most often the privileged helper `/etc/xray-vpn/backend.sh` does not exist. | `/etc/xray-vpn/` was removed or the plugin was never installed. The panel never re-creates it automatically: run `omarchy restart shell` or reinstall, then provision with `bash ~/.config/omarchy/plugins/kryaken.omarchy.vless/backend.sh install`. |
 | 126  | The helper exists but is not executable, or a permission problem. | Check permissions: `ls -l /etc/xray-vpn/backend.sh`; it should be `-rwxr-xr-x root root`. |
 
 ## Serve markers (returned over the serve helper's JSON channel)
