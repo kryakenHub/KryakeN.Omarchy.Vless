@@ -107,7 +107,7 @@ Panel {
   Timer {
     id: errorDismiss
     interval: 9000
-    onTriggered: root._error = ""
+    onTriggered: if (!root._persistError) root._error = ""
   }
   // "Copied ✓" flash when the user taps the error banner to copy it (replaces
   // the error text briefly so the two never overlap).
@@ -188,6 +188,9 @@ Panel {
   // or looping the pkexec password prompt. Creation only happens out-of-band
   // via `bash ~/.config/omarchy/plugins/<name>/backend.sh install`.
   property bool _checkInFlight: false
+  // True while the "VPN backend missing" notice must stay on screen instead of
+  // auto-fading: it is cleared only once the helper files actually reappear.
+  property bool _persistError: false
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -217,13 +220,17 @@ Panel {
   function _onHelperChecked(exists) {
     root._checkInFlight = false
     if (exists) {
+      if (root._persistError) {
+        root._persistError = false
+        root._error = ""
+      }
       serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
       serveProcess.running = true
       return
     }
     // Helper (that is /etc/xray-vpn/backend.sh) is missing: honest persistent
     // error, no automatic re-provision, no repeated password prompt.
-    root._serveFailAll(root.msgHelperMissing)
+    root._serveFailAll(root.msgHelperMissing, true)
   }
 
   function _serveFlush() {
@@ -259,6 +266,7 @@ Panel {
       // marker instead of the raw '[Errno 2]' python trace.
       if (serr.indexOf("KRYAKEN_HELPER_MISSING") >= 0) {
         root._serveUp = false
+        root._persistError = true
         serveProcess.running = false
         serr = root.msgHelperMissing
         console.log("[kryaken.omarchy.vless] helper missing during serve")
@@ -268,9 +276,10 @@ Panel {
     }
   }
 
-  function _serveFailAll(reason) {
+  function _serveFailAll(reason, persist) {
     serveGuard.stop()
     root._serveUp = false
+    if (persist) root._persistError = true
     var q = root._serveQueue.splice(0, root._serveQueue.length)
     root._serveInFlight = root._serveQueue.length
     for (var i = 0; i < q.length; i++) {
@@ -493,6 +502,12 @@ Panel {
       root._server = Model.state.server
       root._exitIp = Model.state.exitIp
       root._latencyMs = Model.state.latencyMs
+      // The "helper missing" notice is persistent: clear it only once the
+      // backend files are actually present again.
+      if (root._persistError && Model.state.helperPresent) {
+        root._persistError = false
+        root._error = ""
+      }
       // Only surface a status-borne error; never clear an error that is still
       // being shown (e.g. the helper-missing notice) just because the status
       // poll reports no error. The active error fades via errorDismiss.
