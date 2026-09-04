@@ -160,8 +160,8 @@ Panel {
   // user deleted /etc/xray-vpn, or the plugin needs a reinstall). The panel
   // never re-creates the folder, so we point at the one command that does.
   readonly property string msgHelperMissing:
-    "VPN backend is missing: /etc/xray-vpn/backend.sh was deleted. " +
-    "The panel will not recreate it. Run \"" + root.installCommand + "\""
+    "VPN backend is missing: /etc/xray-vpn/backend.sh was deleted. Run \"" +
+    root.installCommand + "\""
 
   // Copy-pasteable commands for onboarding (shown while a dependency is
   // missing): install a package, or re-validate the whole setup in a terminal.
@@ -170,7 +170,8 @@ Panel {
 
   // The only command that (re)creates /etc/xray-vpn. The panel never does it.
   readonly property string installCommand:
-    "sudo bash ~/.config/omarchy/plugins/" + root.moduleName + "/backend.sh install"
+    "sudo bash ~/.config/omarchy/plugins/" + root.moduleName +
+    "/backend.sh install && omarchy restart shell"
 
   readonly property string statusMeta:
     !root.isInstalled
@@ -1256,7 +1257,10 @@ Panel {
           TapHandler {
             onTapped: {
               if (root.lastError !== "") {
-                Quickshell.clipboardText = root.lastError
+                // For the persistent "backend missing" notice, copy the
+                // fix command rather than the whole message text.
+                Quickshell.clipboardText =
+                  root._persistError ? root.installCommand : root.lastError
                 root._errorFlash = true
                 errCopyHint.restart()
               }
