@@ -502,7 +502,10 @@ Panel {
       root._server = Model.state.server
       root._exitIp = Model.state.exitIp
       root._latencyMs = Model.state.latencyMs
-      root._error = Model.state.error
+      // Only surface a status-borne error; never clear an error that is still
+      // being shown (e.g. the helper-missing notice) just because the status
+      // poll reports no error. The active error fades via errorDismiss.
+      if (Model.state.error !== "") root._error = Model.state.error
       root._profiles = Model.state.profiles
       root._activeProfile = Model.state.activeProfile
       var missing = []
