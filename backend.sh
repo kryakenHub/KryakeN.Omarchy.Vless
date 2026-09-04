@@ -382,7 +382,21 @@ remove_system_rules() {
 # Rule state must reflect the current mode whenever the unit is running.
 refresh_rules() {
   if unit_active; then
-    if [ "$(get_mode)" = "system" ]; then apply_system_rules; else remove_system_rules; fi
+    apply_rules_for_mode
+  fi
+}
+
+# Apply/remove transparent rules purely based on the configured mode, without
+# consulting systemd unit state. Used by the unit's ExecStartPost/ExecStopPost
+# hooks: for a Type=simple unit, ExecStartPost runs while the unit is still in
+# the "activating" state (it only becomes "active" after ExecStartPost has
+# returned), so an `is-active` check here would always be false and the rules
+# would never be installed at boot. See rules-on/rules-off below.
+apply_rules_for_mode() {
+  if [ "$(get_mode)" = "system" ]; then
+    apply_system_rules
+  else
+    remove_system_rules
   fi
 }
 
@@ -782,7 +796,7 @@ case "$cmd" in
     refresh_rules
     echo ok
     ;;
-  rules-on) refresh_rules ;;
+  rules-on) apply_rules_for_mode ;;
   rules-off) remove_system_rules ;;
   test) test_json ;;
   probe) probe_profile "$@" ;;
