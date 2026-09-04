@@ -352,7 +352,10 @@ Panel {
     root._serveEnqueue(["unshift-secret", input], function() {})
     root._serveEnqueue(["profiles", "add", root._addName],
       function(out, err, code) {
-        if (out !== "") { root.profileMsg = out; root.profileMsgIsError = false }
+        var n = (out !== "" ? out : root._addName).trim()
+        if (n === "") n = "profile"
+        root.profileMsg = n + " added"
+        root.profileMsgIsError = false
         if (root._clearAddOnSuccess) { root._addInput = ""; root._addName = "" }
         root._clearAddOnSuccess = false
         console.log("[kryaken.omarchy.vless] profiles add: out=" + out + " err=" + err)
@@ -392,7 +395,8 @@ Panel {
     root._clearAddOnSuccess = false
     root._serveEnqueue(["profiles", "remove", name],
       function(out, err, code) {
-        if (out !== "") { root.profileMsg = out; root.profileMsgIsError = true }
+        root.profileMsg = name.trim() + " removed"
+        root.profileMsgIsError = true
         root.refreshStatus()
       },
       function(code, out, err) {
