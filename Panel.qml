@@ -354,7 +354,7 @@ Panel {
       function(out, err, code) {
         var n = (out !== "" ? out : root._addName).trim()
         if (n === "") n = "profile"
-        root.profileMsg = n + " added"
+        root.profileMsg = "\"" + n + "\" added"
         root.profileMsgIsError = false
         if (root._clearAddOnSuccess) { root._addInput = ""; root._addName = "" }
         root._clearAddOnSuccess = false
@@ -395,7 +395,7 @@ Panel {
     root._clearAddOnSuccess = false
     root._serveEnqueue(["profiles", "remove", name],
       function(out, err, code) {
-        root.profileMsg = name.trim() + " removed"
+        root.profileMsg = "\"" + name.trim() + "\" removed"
         root.profileMsgIsError = true
         root.refreshStatus()
       },
