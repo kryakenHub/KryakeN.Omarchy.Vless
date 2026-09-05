@@ -156,11 +156,11 @@ Panel {
   // invocations so we never re-execute a user-writable script as root.
   readonly property string privilegedScriptPath: "/etc/xray-vpn/backend.sh"
 
-  // Friendly guidance shown when the privileged helper file is missing (the
-  // user deleted /etc/xray-vpn, or the plugin needs a reinstall). The panel
-  // never re-creates the folder, so we point at the one command that does.
+  // Friendly guidance shown when the privileged helper file disappears while
+  // a serve session is running (the user deleted /etc/xray-vpn mid-session).
+  // For the first-install case the panel auto-installs via pkexec instead.
   readonly property string msgHelperMissing:
-    "VPN backend is missing: /etc/xray-vpn/backend.sh was deleted. Run \"" +
+    "VPN backend was removed while running. Run \"" +
     root.installCommand + "\""
 
   // Copy-pasteable commands for onboarding (shown while a dependency is
@@ -168,7 +168,9 @@ Panel {
   readonly property string doctorCommand:
     "bash ~/.config/omarchy/plugins/" + root.moduleName + "/backend.sh doctor"
 
-  // The only command that (re)creates /etc/xray-vpn. The panel never does it.
+  // The command that (re)creates /etc/xray-vpn. On first use the panel
+  // auto-triggers this via pkexec; this string is shown only as fallback
+  // guidance (e.g. if auto-install fails or the helper disappears mid-session).
   readonly property string installCommand:
     "sudo bash ~/.config/omarchy/plugins/" + root.moduleName +
     "/backend.sh install && omarchy restart shell"
@@ -182,13 +184,9 @@ Panel {
             ? (root.isSystemMode ? "System · Active" : "Proxy · Active")
             : (root.isSystemMode ? "System · Standby" : "Proxy · Standby"))
 
-  // First install creates /etc/xray-vpn/backend.sh from the plugin checkout
-  // The plugin never auto-creates /etc/xray-vpn: if someone `rm -rf`s the
-  // folder (or a fresh install has nothing yet), every privilege request is
-  // refused with a clear "reinstall" error rather than silently re-provisioning
-  // or looping the pkexec password prompt. Creation only happens out-of-band
-  // via `bash ~/.config/omarchy/plugins/<name>/backend.sh install`.
-  property bool _checkInFlight: false
+  // True while a pkexec install bootstrap is in flight (fresh install or
+  // re-provision after /etc/xray-vpn was deleted).
+  property bool _bootstrapInFlight: false
   // True while the "VPN backend missing" notice must stay on screen instead of
   // auto-fading: it is cleared only once the helper files actually reappear.
   property bool _persistError: false
@@ -208,30 +206,18 @@ Panel {
   }
 
   function _serveEnsure() {
-    if (serveProcess.running || root._checkInFlight) return
-    // Always stat /etc/xray-vpn/backend.sh right now rather than trusting a
-    // cached status value, so a folder deleted moments ago is caught here and
-    // never reaches a doomed pkexec serve (which fails asynchronously with a
-    // truncated 'serve error: [Errno 2] No such file...' banner).
-    root._checkInFlight = true
-    helperCheck.command = ["test", "-f", root.privilegedScriptPath]
-    helperCheck.running = true
-  }
-
-  function _onHelperChecked(exists) {
-    root._checkInFlight = false
-    if (exists) {
-      if (root._persistError) {
-        root._persistError = false
-        root._error = ""
-      }
+    if (serveProcess.running) return
+    if (Model.state.helperPresent) {
+      root._bootstrapInFlight = false
       serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
       serveProcess.running = true
-      return
+    } else if (!root._bootstrapInFlight) {
+      root._bootstrapInFlight = true
+      root._error = "Installing VPN backend..."
+      root._persistError = false
+      bootProc.command = ["pkexec", root.daemonScriptPath, "install"]
+      bootProc.running = true
     }
-    // Helper (that is /etc/xray-vpn/backend.sh) is missing: honest persistent
-    // error, no automatic re-provision, no repeated password prompt.
-    root._serveFailAll(root.msgHelperMissing, true)
   }
 
   function _serveFlush() {
@@ -608,16 +594,33 @@ Panel {
     }
   }
 
-  // Quick unprivileged stat of /etc/xray-vpn/backend.sh to decide between
-  // serving directly, first-install bootstrap, or a "reinstall" error. Run
-  // before every serve so a just-deleted helper is always caught.
+  // One-shot bootstrap: provisions /etc/xray-vpn/backend.sh + factory.py from
+  // the plugin checkout via the plugin's own `install` command (pkexec).
+  // After success, immediately starts the serve process (no shell restart).
   Process {
-    id: helperCheck
+    id: bootProc
     running: false
     command: []
-    onStarted: { console.log("[kryaken.omarchy.vless] helper check up") }
+    stdout: StdioCollector { id: bootStdout; waitForEnd: true }
+    stderr: StdioCollector { id: bootStderr; waitForEnd: true }
+    onStarted: { console.log("[kryaken.omarchy.vless] bootstrap install up") }
     onExited: function(exitCode) {
-      root._onHelperChecked(exitCode === 0)
+      root._bootstrapInFlight = false
+      var err = String(bootStderr.text || "")
+      if (exitCode === 0) {
+        console.log("[kryaken.omarchy.vless] bootstrap install ok")
+        root._error = ""
+        root._persistError = false
+        root.refreshStatus()
+        // Helper was just installed — start serve directly instead of
+        // re-entering _serveEnsure() which would re-check the still-stale
+        // Model.state.helperPresent and trigger a second pkexec.
+        serveProcess.command = ["pkexec", root.privilegedScriptPath, "serve"]
+        serveProcess.running = true
+      } else {
+        console.log("[kryaken.omarchy.vless] bootstrap install failed rc=" + exitCode + " err=" + err)
+        root._serveFailAll("privilege helper setup failed (" + exitCode + "): " + err, true)
+      }
     }
   }
 
