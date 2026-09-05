@@ -135,6 +135,12 @@ profile add/select/remove) run through a single persistent helper process:
   `/etc/xray-vpn/backend.sh` (never re-copied on every action, so a tampered
   plugin checkout cannot inject code that then runs as root; refresh it after
   a plugin update with `sudo bash backend.sh install`).
+- Installation artifacts are **pinned**: the release ships `SHA256SUMS.txt`
+  with the exact SHA-256 of `backend.sh` and `factory.py`. `ensure_install`
+  verifies the checkout against it before copying, and writes the same hashes
+  into a root-owned `/etc/xray-vpn/manifest.sha256`. Every time the `serve`
+  helper is about to run, it re-verifies the installed root-owned copies
+  against that manifest and refuses to run on any mismatch.
 - The helper is **not** started at boot — only on your first privileged action
   in a shell session. Starting it is the only point where a password is asked
   (`pkexec`, `org.freedesktop.policykit.exec`, default `auth_admin` — no custom

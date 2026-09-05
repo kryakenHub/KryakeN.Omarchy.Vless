@@ -49,6 +49,81 @@ esac
 FACTORY=""
 [ -n "$SELF" ] && [ -f "$SELF/factory.py" ] && FACTORY="$SELF/factory.py"
 
+# Pin/verify installation artifacts. The repo ships SHA256SUMS.txt (committed
+# next to the source) pinning the exact bytes of backend.sh and factory.py for
+# this release. At install time we check the checkout against it BEFORE copying
+# to /etc/xray-vpn (so a tampered checkout cannot smuggle root code), and write
+# the same hashes into a root-owned /etc/xray-vpn/manifest.sha256. The serve
+# helper then re-verifies the installed root-owned copies against that manifest
+# each time it is about to execute them, refusing to run on any mismatch.
+REPO_MANIFEST="$SELF/SHA256SUMS.txt"
+INSTALLED_MANIFEST="$CONFDIR/manifest.sha256"
+
+# sha256_of <file> -> prints the lowercase hex digest, or nothing on failure.
+# Uses sha256sum (coreutils) and falls back to python3 (already a dependency).
+sha256_of() {
+  [ -f "$1" ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+  if [ -n "$PY" ]; then
+    "$PY" -c 'import hashlib,sys; sys.stdout.write(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1" 2>/dev/null
+    return 0
+  fi
+  return 1
+}
+
+# Pin-check the checkout artifacts against the committed SHA256SUMS.txt.
+# Exits non-zero if the manifest is present but a pinned artifact does not match.
+verify_checkout_pinned() {
+  [ -r "$REPO_MANIFEST" ] || return 0  # no manifest in this checkout: skip
+  rc=0
+  while read -r _sum _file _junk; do
+    [ -n "$_sum" ] || continue
+    case "$_file" in
+      backend.sh|factory.py) ;;
+      *) continue ;;
+    esac
+    h=$(sha256_of "$SELF/$_file") || { echo "pin: cannot hash $_file" >&2; rc=1; continue; }
+    if [ "$h" != "$_sum" ]; then
+      echo "pin: $_file does not match SHA256SUMS.txt (tampered checkout?)" >&2
+      rc=1
+    fi
+  done < "$REPO_MANIFEST"
+  return "$rc"
+}
+
+# Record the hashes of the installed root-owned copies so serve() can verify
+# them before executing. Same format as SHA256SUMS.txt / sha256sum:
+# "<hash>  <file>".
+write_installed_manifest() {
+  b=$(sha256_of "$INSTALLED_BACKEND") || return 1
+  f=$(sha256_of "$INSTALLED_FACTORY") || return 1
+  printf '%s  %s\n%s  %s\n' "$b" "backend.sh" "$f" "factory.py" > "$INSTALLED_MANIFEST" 2>/dev/null || return 1
+  chmod 644 "$INSTALLED_MANIFEST" 2>/dev/null
+}
+
+# Verify the installed root-owned copies still match the pinned manifest.
+# Returns 0 on match, non-zero with a message on mismatch/absence.
+verify_installed_pinned() {
+  [ -r "$INSTALLED_MANIFEST" ] || { echo "serve: pinned manifest missing" >&2; return 1; }
+  while read -r _sum _file _junk; do
+    [ -n "$_sum" ] || continue
+    case "$_file" in
+      backend.sh) p="$INSTALLED_BACKEND" ;;
+      factory.py) p="$INSTALLED_FACTORY" ;;
+      *) continue ;;
+    esac
+    h=$(sha256_of "$p") || { echo "serve: cannot hash $p" >&2; return 1; }
+    if [ "$h" != "$_sum" ]; then
+      echo "serve: pinned $p has been modified (integrity check failed)" >&2
+      return 1
+    fi
+  done < "$INSTALLED_MANIFEST"
+  return 0
+}
+
 if [ "$(id -u)" = 0 ]; then
   run() { "$@"; }
 elif [ -t 0 ]; then
@@ -266,6 +341,10 @@ EOF
 
 ensure_install() {
   mkdir -p "$CONFDIR" || return 1
+  # Pin-check before copying anything from a user-writable checkout: if the
+  # repo manifest is present, the source must match it or we refuse to
+  # provision (a tampered checkout must not smuggle root code).
+  verify_checkout_pinned || return 1
   # Provision root-owned copies of backend.sh and factory.py ONCE, on first
   # use / explicit install. We deliberately do NOT re-copy from the
   # user-writable plugin checkout on every privileged action: an attacker
@@ -284,6 +363,7 @@ ensure_install() {
   }
   provision "$INSTALLED_BACKEND" "$0" || return 1
   provision "$INSTALLED_FACTORY" "factory.py" || return 1
+  write_installed_manifest || { echo "cannot write install manifest" >&2; return 1; }
   ensure_profiles_ready || return 1
   [ -r "$UNIT" ] || unit_text > "$UNIT" 2>/dev/null || return 1
   [ -r "$MODE_FILE" ] || printf '%s\n' "proxy" > "$MODE_FILE" 2>/dev/null
@@ -295,6 +375,7 @@ ensure_install() {
 # automatically on every toggle, so a tampered plugin checkout cannot feed
 # root code.
 redeploy_backend() {
+  verify_checkout_pinned || return 1
   local src fsrc
   src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
   fsrc=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/factory.py
@@ -304,6 +385,7 @@ redeploy_backend() {
   [ -r "$fsrc" ] || { echo "cannot read factory source" >&2; return 1; }
   cp -- "$fsrc" "$INSTALLED_FACTORY" 2>/dev/null || return 1
   chmod 755 "$INSTALLED_FACTORY" 2>/dev/null
+  write_installed_manifest || { echo "cannot write install manifest" >&2; return 1; }
 }
 
 server_ips() {
@@ -676,6 +758,28 @@ serve() {
       return 1
       ;;
   esac
+  # The pinning manifest and the artifacts it verifies must be root-owned; a
+  # non-root-writable manifest would let an attacker repin arbitrary hashes.
+  if [ ! -r "$INSTALLED_MANIFEST" ] || [ -L "$INSTALLED_MANIFEST" ]; then
+    echo '{"code":1,"out":"","err":"serve: pinned manifest missing or is a symlink"}'
+    return 1
+  fi
+  mowner=$(ls -ldn -- "$INSTALLED_MANIFEST" 2>/dev/null | awk '{print $3}')
+  mmode=$(ls -ld -- "$INSTALLED_MANIFEST" 2>/dev/null | awk '{print $1}')
+  if [ "$mowner" != "0" ]; then
+    echo '{"code":1,"out":"","err":"serve: pinned manifest not owned by root"}'
+    return 1
+  fi
+  case "$mmode" in
+    ?????????w*|?????w????*)
+      echo '{"code":1,"out":"","err":"serve: pinned manifest is writable by non-root"}'
+      return 1
+      ;;
+  esac
+  if ! verify_installed_pinned 2>/dev/null; then
+    echo '{"code":1,"out":"","err":"serve: installed backend/factory failed integrity check (reinstall to restore)"}'
+    return 1
+  fi
   _have python3 || {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
