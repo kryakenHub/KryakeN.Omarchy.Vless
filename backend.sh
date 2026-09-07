@@ -74,15 +74,32 @@ sha256_of() {
   return 1
 }
 
-# Pin-check the checkout artifacts against the committed SHA256SUMS.txt.
-# Exits non-zero if the manifest is present but a pinned artifact does not match.
+# Fail-closed pin check of the checkout artifacts against the committed
+# SHA256SUMS.txt. A missing manifest, an incomplete one (backend.sh +
+# factory.py must BOTH be listed) or any hash mismatch all refuse to
+# provision: a tampered or sloppy checkout must never reach the privileged
+# copy step.
 verify_checkout_pinned() {
-  [ -r "$REPO_MANIFEST" ] || return 0  # no manifest in this checkout: skip
+  # The root-owned installed copy is NOT a user checkout: its integrity is
+  # governed by the root-owned manifest.sha256 via verify_installed_pinned,
+  # and /etc/xray-vpn deliberately ships no SHA256SUMS.txt. Only the
+  # user-writable checkout is pinned against the repo manifest, and there the
+  # check is fail-closed.
+  case "$0" in
+    "$INSTALLED_BACKEND"|"$CONFDIR"/*) return 0 ;;
+  esac
+  [ -r "$REPO_MANIFEST" ] || {
+    echo "pin: SHA256SUMS.txt is missing from the checkout (refusing to install)" >&2
+    return 1
+  }
+  found_backend=0
+  found_factory=0
   rc=0
   while read -r _sum _file _junk; do
     [ -n "$_sum" ] || continue
     case "$_file" in
-      backend.sh|factory.py) ;;
+      backend.sh) found_backend=1 ;;
+      factory.py) found_factory=1 ;;
       *) continue ;;
     esac
     h=$(sha256_of "$SELF/$_file") || { echo "pin: cannot hash $_file" >&2; rc=1; continue; }
@@ -91,6 +108,10 @@ verify_checkout_pinned() {
       rc=1
     fi
   done < "$REPO_MANIFEST"
+  if [ "$found_backend" -ne 1 ] || [ "$found_factory" -ne 1 ]; then
+    echo "pin: SHA256SUMS.txt does not pin backend.sh and factory.py (incomplete manifest)" >&2
+    rc=1
+  fi
   return "$rc"
 }
 
@@ -179,7 +200,7 @@ import json, sys
 def b(s): return s == "true"
 x_ok, x_h, sys_ok, py_ok, py_h, cur_ok, cur_h = sys.argv[1:]
 deps = []
-for n, ok, h in (("xray binary", x_ok, x_h), ("systemd", sys_ok, ""),
+for n, ok, h in (("xray-bin", x_ok, x_h), ("systemd", sys_ok, ""),
                  ("python3", py_ok, py_h), ("curl", cur_ok, cur_h)):
     deps.append({"n": n, "ok": b(ok), "h": h if not b(ok) else ""})
 print(json.dumps(deps))
@@ -187,6 +208,35 @@ PYEOF
   else
     printf '[{"n":"xray binary","ok":%s,"h":"%s"},{"n":"systemd","ok":%s,"h":""},{"n":"python3","ok":false,"h":"install python3"},{"n":"curl","ok":%s,"h":"%s"}]\n' \
       "$x_ok" "$(printf '%s' "$x_h" | tr -d '"')" "$sys_ok" "$cur_ok" "$(printf '%s' "$cur_h" | tr -d '"')"
+  fi
+}
+
+# Populates MISS_DEPS (comma-joined display labels, e.g. "xray-bin packet")
+# and MISS_CMDS (the copy-pasteable install commands joined with " &&", e.g.
+# "yay -S xray-bin") for every unmet run-time dependency. Checked by
+# start/restart/toggle BEFORE the profile check so a missing xray binary is
+# reported with its install command instead of a misleading "no profiles".
+# The failing command prints MISS_DEPS to stderr (the panel banner text) and
+# MISS_CMDS to stdout (the tap-to-copy payload, never rendered in the UI).
+MISS_DEPS=""
+MISS_CMDS=""
+missing_deps() {
+  MISS_DEPS=""
+  MISS_CMDS=""
+  if ! command -v xray >/dev/null 2>&1 && [ ! -x /usr/bin/xray ]; then
+    h=$(install_hint xray)
+    MISS_DEPS="${MISS_DEPS:+$MISS_DEPS, }xray-bin packet"
+    [ -n "$h" ] && MISS_CMDS="${MISS_CMDS:+$MISS_CMDS && }$h"
+  fi
+  if ! _have python3; then
+    h=$(install_hint python)
+    MISS_DEPS="${MISS_DEPS:+$MISS_DEPS, }python3 packet"
+    [ -n "$h" ] && MISS_CMDS="${MISS_CMDS:+$MISS_CMDS && }$h"
+  fi
+  if ! _have curl; then
+    h=$(install_hint curl)
+    MISS_DEPS="${MISS_DEPS:+$MISS_DEPS, }curl packet"
+    [ -n "$h" ] && MISS_CMDS="${MISS_CMDS:+$MISS_CMDS && }$h"
   fi
 }
 
@@ -788,8 +838,13 @@ serve() {
     return 0
   }
   exec python3 -c '
-import json, os, subprocess, sys
+import json, os, signal, subprocess, sys
 script = sys.argv[1]
+
+# Per-command deadline: a single stuck subcommand must never stall the whole
+# serve session (and force a fresh pkexec on the panel side). 25s is generous
+# for profile probes, which are the slowest operations.
+CMD_TIMEOUT = 25
 
 # A vless:// link (or config JSON) contains the UUID/keys. Never pass it in
 # argv where it would be visible in the process table: route it over stdin
@@ -804,16 +859,35 @@ def run_cmd(args, secrets):
             secret_input = secrets.pop(0)
         else:
             secret_input = None
-    return subprocess.run(
-        [script] + argv, capture_output=True, text=True, errors="replace",
-        input=secret_input,
-    )
+    try:
+        # start_new_session detaches the child into its own process group so a
+        # timed-out command (and everything it spawned) can be killed together.
+        p = subprocess.run(
+            [script] + argv, capture_output=True, text=True, errors="replace",
+            input=secret_input, timeout=CMD_TIMEOUT, start_new_session=True,
+        )
+        return p
+    except subprocess.TimeoutExpired:
+        # subprocess.run already reaped the direct child; still sweep its whole
+        # process group in case the command left grandchildren behind.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except Exception:
+            pass
+        return _Timeouted()
 
 def _Missing(path):
     class R:
         returncode = 1
         stdout = ""
         stderr = "KRYAKEN_HELPER_MISSING: %s" % path
+    return R()
+
+def _Timeouted():
+    class R:
+        returncode = 124
+        stdout = ""
+        stderr = "command timed out (%ss) and was killed" % CMD_TIMEOUT
     return R()
 
 def respond(rid, code, out, err):
@@ -838,6 +912,10 @@ for line in sys.stdin:
             secrets.append(args[1])
             respond(rid, 0, "", "")
             continue
+        # Heartbeat: acknowledge handling before running so the panel watchdog
+        # can distinguish "helper alive, command still in flight" from a wedged
+        # loop. The reply below is the authoritative per-request response.
+        respond(rid, -1, "", "")
         p = run_cmd(args, secrets)
         respond(rid, p.returncode, p.stdout, p.stderr)
     except Exception as e:
@@ -861,6 +939,12 @@ case "$cmd" in
     ;;
   start)
     ensure_install || { echo "failed to install config/unit" >&2; exit 1; }
+    missing_deps
+    if [ -n "$MISS_DEPS" ]; then
+      echo "missing $MISS_DEPS, click to copy install command" >&2
+      printf '%s\n' "$MISS_CMDS"
+      exit 1
+    fi
     active_profile >/dev/null 2>&1 || { echo "error: no profiles — add one first ($0 profiles add <name> <vless://link|path-to-json>)" >&2; exit 1; }
     sys start "$SERVICE" || { echo "start failed" >&2; exit 1; }
     refresh_rules
@@ -872,6 +956,12 @@ case "$cmd" in
   restart)
     sys stop "$SERVICE" 2>/dev/null
     ensure_install || { echo "failed to install config/unit" >&2; exit 1; }
+    missing_deps
+    if [ -n "$MISS_DEPS" ]; then
+      echo "missing $MISS_DEPS, click to copy install command" >&2
+      printf '%s\n' "$MISS_CMDS"
+      exit 1
+    fi
     active_profile >/dev/null 2>&1 || { echo "error: no profiles — add one first ($0 profiles add <name> <vless://link|path-to-json>)" >&2; exit 1; }
     sys start "$SERVICE" || { echo "start failed" >&2; exit 1; }
     refresh_rules
@@ -880,8 +970,14 @@ case "$cmd" in
     if unit_active; then
       remove_system_rules
       sys stop "$SERVICE"
-    else
+else
       ensure_install || { echo "failed to install config/unit" >&2; exit 1; }
+      missing_deps
+      if [ -n "$MISS_DEPS" ]; then
+        echo "missing $MISS_DEPS, click to copy install command" >&2
+        printf '%s\n' "$MISS_CMDS"
+        exit 1
+      fi
       active_profile >/dev/null 2>&1 || { echo "error: no profiles — add one first ($0 profiles add <name> <vless://link|path-to-json>)" >&2; exit 1; }
       sys start "$SERVICE" || { echo "start failed" >&2; exit 1; }
       refresh_rules

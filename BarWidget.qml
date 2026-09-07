@@ -64,20 +64,6 @@ BarWidget {
     }
   }
 
-  Timer {
-    id: poll
-    interval: root.refreshIntervalMs()
-    running: true
-    repeat: true
-    onTriggered: root.refresh()
-  }
-
-  function refreshIntervalMs() {
-    var sec = parseInt(root.setting("refreshIntervalSec", 5), 10)
-    if (!isFinite(sec) || sec < 1) sec = 5
-    return sec * 1000
-  }
-
   Component {
     id: shieldIcon
     Item {

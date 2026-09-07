@@ -1,90 +1,47 @@
+// Pure parsers for the backend CLI output. No shared mutable state: each
+// call returns a fresh result object, so an instance per monitor cannot
+// race with another one over a common singleton.
 .pragma library
-
-var state = {
-  installed: false,
-  running: false,
-  enabled: false,
-  mode: "proxy",
-  config: "",
-  configFile: "",
-  server: "",
-  exitIp: "",
-  latencyMs: 0,
-  error: "",
-  profiles: [],
-  activeProfile: "",
-  helperPresent: true,
-  deps: []
-}
-
-function reset() {
-  state.installed = false
-  state.running = false
-  state.enabled = false
-  state.mode = "proxy"
-  state.config = ""
-  state.configFile = ""
-  state.server = ""
-  state.exitIp = ""
-  state.latencyMs = 0
-  state.error = ""
-  state.profiles = []
-  state.activeProfile = ""
-  state.helperPresent = true
-  state.deps = []
-}
 
 function parseStatus(raw) {
   var text = String(raw || "").trim()
-  if (text === "") {
-    reset()
-    return false
-  }
+  if (text === "") return null
   try {
     var o = JSON.parse(text)
-    state.installed = !!o.installed
-    state.running = !!o.active
-    state.enabled = !!o.enabled
-    state.mode = String(o.mode || "proxy")
-    state.config = String(o.config || "")
-    state.configFile = String(o.configFile || "")
-    state.server = String(o.server || "")
-    state.exitIp = String(o.exitIp || "")
-    state.latencyMs = Number(o.latencyMs || 0)
-    state.error = String(o.error || "")
-    state.profiles = Array.isArray(o.profiles) ? o.profiles.map(String) : []
-    state.activeProfile = String(o.activeProfile || "")
-    state.helperPresent = o.helperPresent !== false
-    state.deps = Array.isArray(o.deps) ? o.deps.map(function(d) {
-      return { n: String(d.n || ""), ok: !!d.ok, h: String(d.h || "") }
-    }) : []
-    return true
+    return {
+      installed: !!o.installed,
+      running: !!o.active,
+      enabled: !!o.enabled,
+      mode: String(o.mode || "proxy"),
+      config: String(o.config || ""),
+      configFile: String(o.configFile || ""),
+      server: String(o.server || ""),
+      exitIp: String(o.exitIp || ""),
+      latencyMs: Number(o.latencyMs || 0),
+      error: String(o.error || ""),
+      profiles: Array.isArray(o.profiles) ? o.profiles.map(String) : [],
+      activeProfile: String(o.activeProfile || ""),
+      helperPresent: o.helperPresent !== false,
+      deps: Array.isArray(o.deps) ? o.deps.map(function(d) {
+        return { n: String(d.n || ""), ok: !!d.ok, h: String(d.h || "") }
+      }) : []
+    }
   } catch (e) {
-    reset()
-    state.error = "invalid status output"
-    return false
+    return null
   }
 }
 
 function parseTest(raw) {
   var text = String(raw || "").trim()
-  if (text === "") {
-    state.exitIp = ""
-    state.latencyMs = 0
-    return false
-  }
+  if (text === "") return { ok: false, exitIp: "", latencyMs: 0 }
   try {
     var o = JSON.parse(text)
     if (o.ok && o.exitIp) {
-      state.exitIp = String(o.exitIp)
-      state.latencyMs = Number(o.latencyMs || 0)
-    } else {
-      state.exitIp = ""
-      state.latencyMs = 0
+      return { ok: true, exitIp: String(o.exitIp), latencyMs: Number(o.latencyMs || 0) }
     }
-    return !!o.ok
+    return { ok: false, exitIp: "", latencyMs: 0 }
   } catch (e) {
-    return false
+    return { ok: false, exitIp: "", latencyMs: 0 }
   }
 }
 

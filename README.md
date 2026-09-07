@@ -134,17 +134,28 @@ profile add/select/remove) run through a single persistent helper process:
 - On first used operation, `backend.sh` is provisioned to the root-owned
   `/etc/xray-vpn/backend.sh` (never re-copied on every action, so a tampered
   plugin checkout cannot inject code that then runs as root; refresh it after
-  a plugin update with `sudo bash backend.sh install`).
+  a plugin update with `sudo bash backend.sh install && omarchy restart shell`).
 - Installation artifacts are **pinned**: the release ships `SHA256SUMS.txt`
-  with the exact SHA-256 of `backend.sh` and `factory.py`. `ensure_install`
-  verifies the checkout against it before copying, and writes the same hashes
-  into a root-owned `/etc/xray-vpn/manifest.sha256`. Every time the `serve`
-  helper is about to run, it re-verifies the installed root-owned copies
-  against that manifest and refuses to run on any mismatch.
+  with the exact SHA-256 of `backend.sh` and `factory.py`. Before the very
+  first `pkexec` bootstrap the panel re-verifies the user-writable checkout
+  against the same hashes embedded in `Panel.qml` (`pinBackendSha256`,
+  `pinFactorySha256`) and — on a missing or mismatched artifact or manifest —
+  refuses to start the privileged install at all (`install blocked: plugin
+  files do not match the released version (reinstall the plugin from the
+  store)`). The backend side applies the same pin check again in
+  `ensure_install`/`redeploy_backend` and writes the hashes into a root-owned
+  `/etc/xray-vpn/manifest.sha256`. Every time the `serve` helper is about to
+  run, it re-verifies the installed root-owned copies against that manifest
+  and refuses to run on any mismatch.
 - The helper is **not** started at boot — only on your first privileged action
   in a shell session. Starting it is the only point where a password is asked
   (`pkexec`, `org.freedesktop.policykit.exec`, default `auth_admin` — no custom
   polkit rules are installed).
+- **First install asks for the password twice**: once for `pkexec ... install`
+  (which provisions `/etc/xray-vpn`) and once for `pkexec ... serve` (which
+  starts the helper). Each `pkexec` call is authorized independently, so no
+  polkit session is reused between them. After that, both ops are already done
+  and no further password is asked for the rest of the shell session.
 - Every further request is sent as a JSON line over the helper's stdin and
   answered on its stdout (`{"id":...,"args":[...]} -> {"id":...,"code":...}`),
   so no password is needed again for the rest of the session.
